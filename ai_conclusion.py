@@ -43,12 +43,17 @@ AI模型配置:
 """
 
 import os
+import streamlit as st
 from openai import OpenAI
 
 # ========== AI客户端配置 ==========
 # 注意：与 ai_client.py 使用相同的API Key，但使用不同的模型
 # 总结报告使用Gemini模型，单笔交易分析使用GPT模型
-API_KEY = "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"
+try:
+    API_KEY = st.secrets["OPENROUTER_API_KEY"]
+except (FileNotFoundError, KeyError):
+    API_KEY = ""
+
 MODEL = "google/gemini-3-pro-preview"  # Gemini模型，适合总结和对话
 
 client = OpenAI(

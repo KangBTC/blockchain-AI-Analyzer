@@ -61,11 +61,15 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 # ========== API配置信息 ==========
-# 注意：这些是敏感信息，实际使用时应该从环境变量或配置文件中读取
-API_KEY = "8dc54cb0-2f9b-4f80-8c28-3e9d9df90c08"
-SECRET_KEY = "81D30EE41CB8AEA28593F0AD39E921B1"
-# 如果您的API Key有Passphrase，请在这里填写。
-PASSPHRASE = "aBc8706802!@#" 
+try:
+    API_KEY = st.secrets["OKX_API_KEY"]
+    SECRET_KEY = st.secrets["OKX_SECRET_KEY"]
+    PASSPHRASE = st.secrets["OKX_PASSPHRASE"]
+except (FileNotFoundError, KeyError):
+    API_KEY = ""
+    SECRET_KEY = ""
+    PASSPHRASE = ""
+
 BASE_URL = "https://web3.okx.com"
 
 def get_transactions_by_address(address: str, chains: str, limit: int = 20):
@@ -152,16 +156,11 @@ def get_transactions_by_address(address: str, chains: str, limit: int = 20):
             return response_json.get("data", [])
         else:
             # API返回业务错误（例如：参数错误、权限不足等）
-            error_msg = f"OKX API Error: {response_json.get('msg')} (Code: {response_json.get('code')})"
-            print(error_msg)
-            st.error(f"❌ 数据获取失败: {error_msg}")
-            if response_json.get("code") in ["50100", "50101", "50102"]:
-                 st.warning("⚠️ 鉴权失败。请检查 Streamlit Secrets 是否配置了正确的 OKX_API_KEY。")
+            print(f"API Error in get_transactions_by_address: {response_json.get('msg')}")
             return [] # API业务错误，返回空列表
     else:
         # HTTP请求失败（例如：404、500等）
         print(f"HTTP Error in get_transactions_by_address: {response.status_code}")
-        st.error(f"❌ 网络请求失败 (HTTP {response.status_code})。可能是IP被封锁或服务不可用。")
         return [] # HTTP错误，返回空列表
 
 def get_transaction_detail_by_hash(chain_index: str, tx_hash: str):
