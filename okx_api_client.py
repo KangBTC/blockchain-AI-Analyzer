@@ -56,21 +56,21 @@ import requests
 import hmac
 import base64
 import json
-import streamlit as st
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 # ========== API配置信息 ==========
-try:
-    API_KEY = st.secrets["OKX_API_KEY"]
-    SECRET_KEY = st.secrets["OKX_SECRET_KEY"]
-    PASSPHRASE = st.secrets["OKX_PASSPHRASE"]
-except (FileNotFoundError, KeyError):
-    API_KEY = ""
-    SECRET_KEY = ""
-    PASSPHRASE = ""
-
+# 注意：这些是敏感信息，实际使用时应该从环境变量或配置文件中读取
+API_KEY = "8dc54cb0-2f9b-4f80-8c28-3e9d9df90c08"
+SECRET_KEY = "81D30EE41CB8AEA28593F0AD39E921B1"
+# 如果您的API Key有Passphrase，请在这里填写。
+PASSPHRASE = "aBc8706802!@#" 
 BASE_URL = "https://web3.okx.com"
+
+# ========== 调试信息 ==========
+# Streamlit 部署环境下，OKX 可能因 IP 白名单 / 限流 / 网络策略等原因请求失败。
+# get_transactions_by_address 出错时会返回空列表，为了便于定位问题，这里保留最近一次请求的元信息。
+LAST_TX_BY_ADDRESS_META = {}
 
 def get_transactions_by_address(address: str, chains: str, limit: int = 20):
     """
@@ -144,24 +144,62 @@ def get_transactions_by_address(address: str, chains: str, limit: int = 20):
     
     # ========== 发送请求 ==========
     # 使用GET方法发送请求，查询参数通过params传递
-    response = requests.get(url, headers=headers, params=params)
+    global LAST_TX_BY_ADDRESS_META
+    LAST_TX_BY_ADDRESS_META = {
+        "address": address,
+        "chains": chains,
+        "limit": limit,
+        "request_path": request_path,
+        "url": url,
+        "timestamp": timestamp
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=20)
+    except requests.RequestException as e:
+        LAST_TX_BY_ADDRESS_META.update({
+            "error_type": type(e).__name__,
+            "error": str(e),
+        })
+        print(f"Network Error in get_transactions_by_address: {e}")
+        return []
+
+    LAST_TX_BY_ADDRESS_META.update({
+        "http_status": response.status_code,
+        "response_text_preview": (response.text or "")[:800]
+    })
 
     # ========== 检查响应 ==========
     if response.status_code == 200:
         # HTTP请求成功，检查业务状态码
-        response_json = response.json()
+        try:
+            response_json = response.json()
+        except ValueError as e:
+            LAST_TX_BY_ADDRESS_META.update({
+                "error_type": "JSONDecodeError",
+                "error": str(e),
+            })
+            print(f"JSON Decode Error in get_transactions_by_address: {e}")
+            return []
+
+        LAST_TX_BY_ADDRESS_META.update({
+            "api_code": response_json.get("code"),
+            "api_msg": response_json.get("msg"),
+        })
+
         if response_json.get("code") == "0":
             # API业务成功，返回数据
-            # 确保即使data不存在也返回空列表，避免后续处理出错
-            return response_json.get("data", [])
+            data = response_json.get("data", []) or []
+            LAST_TX_BY_ADDRESS_META["data_len"] = len(data) if isinstance(data, list) else None
+            return data
         else:
             # API返回业务错误（例如：参数错误、权限不足等）
             print(f"API Error in get_transactions_by_address: {response_json.get('msg')}")
-            return [] # API业务错误，返回空列表
+            return []
     else:
         # HTTP请求失败（例如：404、500等）
         print(f"HTTP Error in get_transactions_by_address: {response.status_code}")
-        return [] # HTTP错误，返回空列表
+        return []
 
 def get_transaction_detail_by_hash(chain_index: str, tx_hash: str):
     """

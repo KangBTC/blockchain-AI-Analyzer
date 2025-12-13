@@ -19,7 +19,7 @@ from db_manager import (
     get_transaction_details_by_hashes, add_transaction_detail, 
     get_labels_by_addresses, add_labels, update_ai_analysis,
     setup_databases, list_available_chats, load_chat_session,
-    reset_chat_history, save_chat_context
+    reset_chat_history
 )
 
 # ========== 页面配置 ==========
@@ -97,16 +97,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ========== 配置验证 ==========
-# 所有 API Key 现在都从 .streamlit/secrets.toml 读取
-# 各模块会自动从 st.secrets 读取配置，这里只做简单的验证提示
+# ========== 自动配置加载 (Monkey Patch) ==========
 try:
-    required_keys = ["OPENROUTER_API_KEY", "OKX_API_KEY", "OKX_SECRET_KEY", "OKX_PASSPHRASE", "APIFY_API_TOKEN"]
-    missing_keys = [key for key in required_keys if key not in st.secrets]
-    if missing_keys:
-        st.warning(f"⚠️ 缺少必要的配置项: {', '.join(missing_keys)}。请检查 .streamlit/secrets.toml 文件。")
+    if "OPENROUTER_API_KEY" in st.secrets:
+        ai_client.API_KEY = st.secrets["OPENROUTER_API_KEY"]
+        ai_conclusion.API_KEY = st.secrets["OPENROUTER_API_KEY"]
+    
+    if "OKX_API_KEY" in st.secrets:
+        okx_api_client.API_KEY = st.secrets["OKX_API_KEY"]
+        okx_api_client.SECRET_KEY = st.secrets["OKX_SECRET_KEY"]
+        okx_api_client.PASSPHRASE = st.secrets["OKX_PASSPHRASE"]
+        
+    if "APIFY_API_TOKEN" in st.secrets:
+        from apify_client import ApifyClient
+        arkham_client.APIFY_API_TOKEN = st.secrets["APIFY_API_TOKEN"]
+        arkham_client.client = ApifyClient(st.secrets["APIFY_API_TOKEN"])
 except FileNotFoundError:
-    st.error("❌ 未找到配置文件！请创建 .streamlit/secrets.toml 并填入 API Key。")
+    pass
 
 # ========== Session State 初始化 ==========
 if "messages" not in st.session_state:
@@ -188,6 +195,8 @@ with st.sidebar:
     
     tx_limit = st.slider("分析交易数量", min_value=5, max_value=50, value=10, step=5)
     
+    debug_mode = st.checkbox("🪵 显示调试信息（OKX/Arkham 调用问题排查）", value=False)
+    
     st.markdown("---")
     if st.button("🗑️ 清空当前会话"):
         for key in list(st.session_state.keys()):
@@ -237,6 +246,9 @@ if start_btn and target_address:
                 
                 if not raw_summary:
                     st.error("未找到该地址的交易记录。请确认地址和链选择正确。")
+                    if debug_mode:
+                        st.warning("调试信息：OKX API 可能返回了错误或被限流（Streamlit 部署环境常见）。")
+                        st.code(json.dumps(getattr(okx_api_client, "LAST_TX_BY_ADDRESS_META", {}), ensure_ascii=False, indent=2))
                     st.stop()
                     
                 tx_info_list = extract_tx_info_from_summary(raw_summary)
@@ -272,42 +284,19 @@ if start_btn and target_address:
                                     add_transaction_detail(d['txhash'], d['chainIndex'], target_address, d)
                         except Exception as e:
                             st.warning(f"获取交易 {tx['txHash']} 失败: {e}")
-                        time.sleep(1.1)  # 与 core_logic.py 保持一致，避免API限流
+                        time.sleep(1.0)
                     fetch_ph.empty()
                 
                 # --- 步骤 3: 数据清洗与标签获取 ---
                 progress_bar.progress(50, text="🏷️ 正在识别地址身份 (Arkham Intelligence)...")
                 processed_data = process_and_clean_details(all_details_raw, target_address)
-                # 将处理后的数据转换为字典，以交易哈希为键，方便后续查找
-                processed_data_map = {tx['txhash']: tx for tx in processed_data}
                 
-                # 辅助函数：从字段中提取地址
-                # 因为地址可能以字符串或字典形式存储，需要统一处理
-                def get_address_from_field(field_value):
-                    """从字段值中提取地址，支持字符串和字典两种格式"""
-                    if isinstance(field_value, dict):
-                        return field_value.get('address')
-                    elif isinstance(field_value, str):
-                        return field_value
-                    return None
-                
-                # 收集地址（包括主交易、内部交易、代币转账中的所有地址）
+                # 收集地址
                 all_addrs = set()
                 for tx in processed_data:
-                    # 主交易的 from/to
                     all_addrs.add(tx['from']['address'])
                     all_addrs.add(tx['to']['address'])
-                    # 内部交易中的地址
-                    for itx in tx.get('internalTransactions', []):
-                        all_addrs.add(get_address_from_field(itx.get('from')))
-                        all_addrs.add(get_address_from_field(itx.get('to')))
-                    # 代币转账中的地址
-                    for ttx in tx.get('tokenTransfers', []):
-                        all_addrs.add(get_address_from_field(ttx.get('from')))
-                        all_addrs.add(get_address_from_field(ttx.get('to')))
-                # 移除空值
                 all_addrs.discard(None)
-                all_addrs.discard("")
                 
                 # 获取标签
                 cached_labels = get_labels_by_addresses(list(all_addrs))
@@ -321,120 +310,59 @@ if start_btn and target_address:
                         add_labels(new_labels)
                         arkham_data.update({k.lower(): v for k, v in new_labels.items()})
                 
-                # 注入标签（主交易 + 内部交易 + 代币转账）
-                def enrich_address_field(target_dict, address_key):
-                    """
-                    为地址字段添加标签信息
-                    
-                    参数:
-                        target_dict: 包含地址字段的字典（例如：tx, itx, ttx）
-                        address_key: 地址字段的键名（'from' 或 'to'）
-                    """
-                    field_value = target_dict.get(address_key)
-                    addr_str = get_address_from_field(field_value)
-                    
-                    # 如果地址在标签数据中，添加标签信息
-                    if addr_str and addr_str.lower() in arkham_data:
-                        # 如果地址是字符串格式，先转换为字典格式
-                        if isinstance(field_value, str):
-                            target_dict[address_key] = {"address": field_value}
-                        
-                        # 添加地址信息（如果还没有添加过）
-                        if "addressInfo" not in target_dict[address_key]:
-                             target_dict[address_key]['addressInfo'] = arkham_data[addr_str.lower()]
-                
+                # 注入标签
                 for tx in processed_data:
-                    # 为主交易的from/to添加标签
-                    enrich_address_field(tx, 'from')
-                    enrich_address_field(tx, 'to')
-                    # 为内部交易的from/to添加标签
-                    for itx in tx.get('internalTransactions', []):
-                        enrich_address_field(itx, 'from')
-                        enrich_address_field(itx, 'to')
-                    # 为代币转账的from/to添加标签
-                    for ttx in tx.get('tokenTransfers', []):
-                        enrich_address_field(ttx, 'from')
-                        enrich_address_field(ttx, 'to')
+                    for key in ['from', 'to']:
+                        addr = tx[key].get('address')
+                        if addr and isinstance(addr, str) and addr.lower() in arkham_data:
+                             tx[key]['addressInfo'] = arkham_data[addr.lower()]
 
                 # --- 步骤 4: AI 分析 ---
                 progress_bar.progress(70, text="🤖 AI 侦探正在分析每一笔交易 (Analysis by Gemini 3)...")
                 
-                # 检查哪些交易已经有AI分析结果（从数据库缓存中）
                 txs_to_analyze = []
-                for tx_hash, tx_data in processed_data_map.items():
-                    if tx_hash in cached_data and cached_data[tx_hash].get('analysis'):
-                        # 如果已有分析结果，直接使用缓存
-                        tx_data['ai_analysis'] = cached_data[tx_hash]['analysis']
-                    else:
-                        # 如果没有分析结果，加入待分析列表
-                        txs_to_analyze.append(tx_data)
+                for tx in processed_data:
+                    if 'ai_analysis' not in tx:
+                        if tx['txhash'] in cached_data and cached_data[tx['txhash']].get('analysis'):
+                            tx['ai_analysis'] = cached_data[tx['txhash']]['analysis']
+                        else:
+                            txs_to_analyze.append(tx)
                 
-                st.write(f"AI分析缓存检查：{len(processed_data) - len(txs_to_analyze)} 条已有分析，{len(txs_to_analyze)} 条需要进行AI分析。")
-                
-                # 如果有需要分析的交易，使用线程池并行处理
                 if txs_to_analyze:
                     ai_ph = st.empty()
                     completed_count = 0
-                    # 创建线程池，最多10个并发线程（与 core_logic.py 保持一致）
-                    with ThreadPoolExecutor(max_workers=10) as executor:
+                    with ThreadPoolExecutor(max_workers=5) as executor:
                         future_to_tx = {executor.submit(analyze_transaction, tx): tx for tx in txs_to_analyze}
                         for future in as_completed(future_to_tx):
                             tx = future_to_tx[future]
                             try:
-                                # 获取AI分析结果（这里会等待任务完成）
-                                ai_result = future.result()
-                                analysis_text = ai_result.get('analysis', 'Analysis not available.')
-                                # 将分析结果添加到交易数据中
+                                res = future.result()
+                                analysis_text = res.get('analysis', 'Analysis failed')
                                 tx['ai_analysis'] = analysis_text
-                                # 保存分析结果到数据库，供下次使用
                                 update_ai_analysis(tx['txhash'], analysis_text)
-                            except Exception as exc:
-                                # 如果某笔交易的AI分析失败，记录错误但继续处理其他交易
-                                st.warning(f"交易 {tx.get('txhash')} 在AI分析环节产生错误: {exc}")
-                                tx['ai_analysis'] = f'Failed to analyze: {str(exc)}'
+                            except Exception as e:
+                                tx['ai_analysis'] = f"Error: {str(e)}"
                             
                             completed_count += 1
                             ai_ph.write(f"AI 分析进度: {completed_count}/{len(txs_to_analyze)}")
                     ai_ph.empty()
                 
-                st.session_state.processed_txs = list(processed_data_map.values())
+                st.session_state.processed_txs = processed_data
 
                 # --- 步骤 5: 生成总结 ---
                 progress_bar.progress(90, text="📝 正在撰写最终侦查报告...")
-                # 提取所有有效的AI分析文本（与 core_logic.py 保持一致，使用 processed_data_map）
-                all_analyses = [tx.get('ai_analysis', '') for tx in processed_data_map.values() if tx.get('ai_analysis')]
+                all_analyses = [tx.get('ai_analysis', '') for tx in processed_data if tx.get('ai_analysis')]
                 
-                # 创建专门的总结生成loading区域
-                summary_loading = st.empty()
-                with summary_loading.container():
-                    st.markdown("---")
-                    st.info("""
-                    **🤖 AI 侦探正在深度思考中 (Analysis by Gemini 3)......**
-                    
-                    **正在执行的任务：**
-                    - 📊 汇总所有交易行为模式
-                    - 🎯 推断用户身份与策略  
-                    - 💰 分析资金流向图谱
-                    - ⚠️ 评估潜在风险点
-                    
-                    *Gemini 3 Pro 正在生成深度画像报告，这可能需要 10-30 秒，请稍候...*
-                    """)
+                final_report = generate_conclusion(target_address, all_analyses)
                 
-                # 调用AI生成报告（这个过程可能需要10-30秒）
-                # 使用spinner包裹，让用户知道程序没有卡死
-                with st.spinner("🕵️‍♂️ AI 正在分析链上数据，生成深度画像报告..."):
-                    final_report = generate_conclusion(target_address, all_analyses)
-                
-                # 生成完成后，清空loading提示
-                summary_loading.empty()
-                
-                # 保存上下文（与 core_logic.py 保持一致，使用分隔符连接）
-                analyses_summary_str = "\n\n---\n\n".join(all_analyses)
-                save_chat_context(target_address, final_report, analyses_summary_str)
+                # 保存上下文
+                from db_manager import save_chat_context, setup_chat_database
+                setup_chat_database(target_address)
+                save_chat_context(target_address, final_report, "\n\n".join(all_analyses))
                 
                 # 保存状态
                 st.session_state.report_content = final_report
-                st.session_state.analyses_summary = analyses_summary_str
+                st.session_state.analyses_summary = "\n\n".join(all_analyses)
                 st.session_state.analysis_done = True
                 st.session_state.current_address = target_address
                 st.session_state.messages = [{"role": "assistant", "content": "🕵️‍♂️ 报告已生成！关于这位用户的行为、动机或风险，您有什么想问的吗？"}]
