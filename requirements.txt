@@ -1,0 +1,8 @@
+openai
+requests
+tqdm
+apify-client
+streamlit
+pandas
+plotly
+supabase
