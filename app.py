@@ -195,8 +195,6 @@ with st.sidebar:
     
     tx_limit = st.slider("分析交易数量", min_value=5, max_value=50, value=10, step=5)
     
-    debug_mode = st.checkbox("🪵 显示调试信息（OKX/Arkham 调用问题排查）", value=False)
-    
     st.markdown("---")
     if st.button("🗑️ 清空当前会话"):
         for key in list(st.session_state.keys()):
@@ -246,9 +244,6 @@ if start_btn and target_address:
                 
                 if not raw_summary:
                     st.error("未找到该地址的交易记录。请确认地址和链选择正确。")
-                    if debug_mode:
-                        st.warning("调试信息：OKX API 可能返回了错误或被限流（Streamlit 部署环境常见）。")
-                        st.code(json.dumps(getattr(okx_api_client, "LAST_TX_BY_ADDRESS_META", {}), ensure_ascii=False, indent=2))
                     st.stop()
                     
                 tx_info_list = extract_tx_info_from_summary(raw_summary)

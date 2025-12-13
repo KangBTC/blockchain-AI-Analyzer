@@ -37,22 +37,15 @@ AI返回什么：
 
 import os
 import json
-import streamlit as st
 from openai import OpenAI
 
 # ========== AI客户端配置 ==========
-# 从 Streamlit Secrets 读取配置
-try:
-    API_KEY = st.secrets["OPENROUTER_API_KEY"]
-except (FileNotFoundError, KeyError):
-    # 如果没有找到 secrets，可以设置一个空值或者抛出更友好的错误
-    # 但为了兼容性，这里暂时留空，会在 app.py 里通过 try-except 处理
-    API_KEY = ""
-
-MODEL = "google/gemini-2.5-flash"  # 使用的AI模型
+# OpenRouter API配置
+# OpenRouter是一个AI模型聚合平台，提供统一的API访问多种模型
+API_KEY = "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"
+MODEL = "google/gemini-2.5-pro"  # 使用的AI模型
 
 # 创建OpenAI客户端（兼容OpenRouter API）
-# 注意：如果 API_KEY 为空，初始化可能会报错，建议在使用前检查
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",  # OpenRouter的API地址
     api_key=API_KEY,

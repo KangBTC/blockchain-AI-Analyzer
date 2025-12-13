@@ -1,196 +1,195 @@
+import sqlite3
 import json
 import os
-import streamlit as st
-from supabase import create_client, Client
 
-# ========== 数据库连接管理 ==========
-
-# 全局客户端实例
-_supabase_client = None
-
-def get_supabase() -> Client:
-    """
-    获取 Supabase 客户端实例（单例模式）
-    优先从 Streamlit Secrets 读取配置
-    """
-    global _supabase_client
-    if _supabase_client:
-        return _supabase_client
-    
-    try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
-        _supabase_client = create_client(url, key)
-        return _supabase_client
-    except Exception as e:
-        # 如果在本地运行且没有配置 secrets，尝试读取环境变量或报错
-        # 为了简化，这里直接报错提示
-        raise ValueError("❌ 未找到 Supabase 配置！请在 .streamlit/secrets.toml 中配置 SUPABASE_URL 和 SUPABASE_KEY。")
+# ========== 数据库文件路径配置 ==========
+# 定义数据库目录和文件路径
+DB_DIR_ADDRESS = 'data/sql/address'           # 交易数据库目录
+DB_DIR_LABELS = 'data/sql/address_labels'     # 地址标签数据库目录
+DB_DIR_CHAT = 'data/sql/chat'                 # 聊天记录数据库目录（每个地址一个数据库文件）
+DB_PATH_TRANSACTIONS = os.path.join(DB_DIR_ADDRESS, 'transactions.db')  # 交易数据库文件路径
+DB_PATH_LABELS = os.path.join(DB_DIR_LABELS, 'labels.db')               # 地址标签数据库文件路径
 
 def setup_databases():
     """
-    Supabase 模式下，不需要本地建表（表已经在 Supabase 网页端建好了）。
-    这里只做简单的连接测试。
+    准备好数据库，如果还没有就创建
     """
-    try:
-        client = get_supabase()
-        # 简单测试一下连接
-        client.table("transactions").select("count", count="exact").limit(0).execute()
-        # print("✅ Supabase 连接成功")
-    except Exception as e:
-        st.error(f"⚠️ 数据库连接失败: {str(e)}")
+    # ========== 创建数据库目录 ==========
+    os.makedirs(DB_DIR_ADDRESS, exist_ok=True)
+    os.makedirs(DB_DIR_LABELS, exist_ok=True)
+    os.makedirs(DB_DIR_CHAT, exist_ok=True)  # 创建聊天记录目录
+
+    # ========== 创建交易数据库和表 ==========
+    with sqlite3.connect(DB_PATH_TRANSACTIONS) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            txHash TEXT PRIMARY KEY,              -- 交易哈希（主键）
+            chainIndex TEXT NOT NULL,             -- 链ID
+            queriedAddress TEXT NOT NULL,         -- 查询的地址
+            transactionDetailJson TEXT NOT NULL   -- 交易详情（JSON字符串）
+        )
+        """)
+        # ========== 检查并添加 ai_analysis 列 ==========
+        cursor.execute("PRAGMA table_info(transactions)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'ai_analysis' not in columns:
+            cursor.execute("ALTER TABLE transactions ADD COLUMN ai_analysis TEXT")
+        conn.commit()
+
+    # ========== 创建地址标签数据库和表 ==========
+    with sqlite3.connect(DB_PATH_LABELS) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS labels (
+            address TEXT PRIMARY KEY,    -- 地址（主键，小写）
+            labelJson TEXT NOT NULL      -- 标签信息（JSON字符串）
+        )
+        """)
+        conn.commit()
 
 # ========== 交易数据库操作 ==========
 
 def add_transaction_detail(txHash: str, chainIndex: str, queriedAddress: str, detail_data: dict):
-    """保存交易详情"""
-    try:
-        client = get_supabase()
-        data = {
-            "tx_hash": txHash,
-            "chain_index": chainIndex,
-            "queried_address": queriedAddress,
-            "transaction_detail_json": detail_data
-        }
-        # upsert=True 表示如果主键存在则更新
-        client.table("transactions").upsert(data).execute()
-    except Exception as e:
-        print(f"Error saving transaction: {e}")
+    with sqlite3.connect(DB_PATH_TRANSACTIONS) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO transactions (txHash, chainIndex, queriedAddress, transactionDetailJson) VALUES (?, ?, ?, ?)",
+            (txHash, chainIndex, queriedAddress, json.dumps(detail_data))
+        )
+        conn.commit()
 
 def get_transaction_details_by_hashes(txHashes: list[str]) -> dict[str, dict]:
-    """批量获取交易详情"""
     if not txHashes:
         return {}
     
-    try:
-        client = get_supabase()
-        # 使用 in_ 过滤器批量查询
-        response = client.table("transactions").select("tx_hash, transaction_detail_json, ai_analysis").in_("tx_hash", txHashes).execute()
+    with sqlite3.connect(DB_PATH_TRANSACTIONS) as conn:
+        cursor = conn.cursor()
+        query = f"SELECT txHash, transactionDetailJson, ai_analysis FROM transactions WHERE txHash IN ({','.join(['?']*len(txHashes))})"
+        cursor.execute(query, txHashes)
         
         results = {}
-        for item in response.data:
-            results[item['tx_hash']] = {
-                "detail": item['transaction_detail_json'], # Supabase 会自动解析 JSONB
-                "analysis": item.get('ai_analysis')
+        for row in cursor.fetchall():
+            txHash, detail_json, ai_analysis = row
+            results[txHash] = {
+                "detail": json.loads(detail_json),
+                "analysis": ai_analysis
             }
         return results
-    except Exception as e:
-        print(f"Error fetching transactions: {e}")
-        return {}
 
 def update_ai_analysis(txHash: str, analysis: str):
-    """更新 AI 分析结果"""
-    try:
-        client = get_supabase()
-        client.table("transactions").update({"ai_analysis": analysis}).eq("tx_hash", txHash).execute()
-    except Exception as e:
-        print(f"Error updating analysis: {e}")
+    with sqlite3.connect(DB_PATH_TRANSACTIONS) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE transactions SET ai_analysis = ? WHERE txHash = ?",
+            (analysis, txHash)
+        )
+        conn.commit()
 
 # ========== 地址标签数据库操作 ==========
 
 def add_labels(label_data: dict[str, dict]):
-    """批量保存地址标签"""
     if not label_data:
         return
-        
-    try:
-        client = get_supabase()
-        to_insert = [
-            {"address": address.lower(), "label_json": data}
-            for address, data in label_data.items()
-        ]
-        client.table("labels").upsert(to_insert).execute()
-    except Exception as e:
-        print(f"Error saving labels: {e}")
+    to_insert = [(address.lower(), json.dumps(data)) for address, data in label_data.items()]
+    
+    with sqlite3.connect(DB_PATH_LABELS) as conn:
+        cursor = conn.cursor()
+        cursor.executemany(
+            "INSERT OR REPLACE INTO labels (address, labelJson) VALUES (?, ?)",
+            to_insert
+        )
+        conn.commit()
 
 def get_labels_by_addresses(addresses: list[str]) -> dict[str, dict]:
-    """批量获取地址标签"""
     if not addresses:
         return {}
+    addresses_lower = [addr.lower() for addr in addresses]
     
-    try:
-        client = get_supabase()
-        addresses_lower = [addr.lower() for addr in addresses]
-        response = client.table("labels").select("address, label_json").in_("address", addresses_lower).execute()
+    with sqlite3.connect(DB_PATH_LABELS) as conn:
+        cursor = conn.cursor()
+        query = f"SELECT address, labelJson FROM labels WHERE address IN ({','.join(['?']*len(addresses_lower))})"
+        cursor.execute(query, addresses_lower)
         
         results = {}
-        for item in response.data:
-            results[item['address']] = item['label_json']
+        for row in cursor.fetchall():
+            address, label_json = row
+            results[address] = json.loads(label_json)
         return results
-    except Exception as e:
-        print(f"Error fetching labels: {e}")
-        return {}
 
 # ========== 聊天记录数据库操作 ==========
 
+def get_chat_db_path(address: str) -> str:
+    return os.path.join(DB_DIR_CHAT, f"{address}.db")
+
+def setup_chat_database(address: str):
+    db_path = get_chat_db_path(address)
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS context (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL
+        )
+        """)
+        conn.commit()
+
 def reset_chat_history(address: str):
-    """清空某个地址的聊天记录"""
-    try:
-        client = get_supabase()
-        # 删除 chat_history 表中该地址的所有记录
-        client.table("chat_history").delete().eq("address", address).execute()
-    except Exception as e:
-        print(f"Error resetting chat history: {e}")
+    """
+    清空某个地址的聊天记录（保留context，只清空对话历史）
+    用于重新开始分析时，避免旧的对话混入
+    """
+    db_path = get_chat_db_path(address)
+    if os.path.exists(db_path):
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM history") # 清空历史表
+            conn.commit()
 
 def save_chat_context(address: str, report: str, analyses_summary: str):
-    """保存聊天上下文（报告和摘要）"""
-    try:
-        client = get_supabase()
-        data = {
-            "address": address,
-            "report": report,
-            "analyses_summary": analyses_summary,
-            "updated_at": "now()"
-        }
-        client.table("chat_context").upsert(data).execute()
-    except Exception as e:
-        print(f"Error saving context: {e}")
+    db_path = get_chat_db_path(address)
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO context (key, value) VALUES ('report', ?)", (report,))
+        cursor.execute("INSERT OR REPLACE INTO context (key, value) VALUES ('analyses_summary', ?)", (analyses_summary,))
+        conn.commit()
 
 def save_chat_message(address: str, role: str, content: str):
-    """保存一条聊天记录"""
+    db_path = get_chat_db_path(address)
     try:
-        client = get_supabase()
-        data = {
-            "address": address,
-            "role": role,
-            "content": content
-        }
-        client.table("chat_history").insert(data).execute()
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO history (role, content) VALUES (?, ?)", (role, content))
+            conn.commit()
     except Exception as e:
-        print(f"Error saving message: {e}")
+        print(f"保存聊天记录时出错: {e}")
 
 def load_chat_session(address: str) -> tuple[str, str, list]:
-    """加载完整的会话数据"""
-    try:
-        client = get_supabase()
+    db_path = get_chat_db_path(address)
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM context WHERE key = 'report'")
+        row = cursor.fetchone()
+        report = row[0] if row else ""
         
-        # 1. 获取上下文 (Context)
-        ctx_resp = client.table("chat_context").select("report, analyses_summary").eq("address", address).execute()
+        cursor.execute("SELECT value FROM context WHERE key = 'analyses_summary'")
+        row = cursor.fetchone()
+        analyses_summary = row[0] if row else ""
         
-        report = ""
-        analyses_summary = ""
-        if ctx_resp.data:
-            report = ctx_resp.data[0].get("report", "")
-            analyses_summary = ctx_resp.data[0].get("analyses_summary", "")
-            
-        # 2. 获取历史消息 (History) - 按 ID 升序
-        hist_resp = client.table("chat_history").select("role, content").eq("address", address).order("id").execute()
-        
-        history = hist_resp.data if hist_resp.data else []
-        
+        cursor.execute("SELECT role, content FROM history ORDER BY id ASC")
+        history = [{"role": role, "content": content} for role, content in cursor.fetchall()]
         return report, analyses_summary, history
-    except Exception as e:
-        st.error(f"加载历史记录失败: {e}")
-        return "", "", []
 
 def list_available_chats() -> list[str]:
-    """列出所有已分析的地址"""
-    try:
-        client = get_supabase()
-        # 查询 chat_context 表中的所有地址
-        response = client.table("chat_context").select("address").order("updated_at", desc=True).execute()
-        
-        return [item['address'] for item in response.data]
-    except Exception as e:
-        # 首次运行时可能表为空，不报错
+    if not os.path.exists(DB_DIR_CHAT):
         return []
+    files = [f for f in os.listdir(DB_DIR_CHAT) if f.endswith('.db')]
+    addresses = [os.path.splitext(f)[0] for f in files]
+    return addresses

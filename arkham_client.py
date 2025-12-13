@@ -47,19 +47,16 @@ API认证:
 """
 
 import json
-import streamlit as st
 from apify_client import ApifyClient
 
 # ========== Apify配置信息 ==========
-try:
-    APIFY_API_TOKEN = st.secrets["APIFY_API_TOKEN"]
-    ARKHAM_ACTOR_ID = st.secrets.get("ARKHAM_ACTOR_ID", "BFRkJAsA9XBVgzoce")  # 默认值
-except (FileNotFoundError, KeyError):
-    APIFY_API_TOKEN = ""
-    ARKHAM_ACTOR_ID = "BFRkJAsA9XBVgzoce"  # 默认值
+# Apify API Token（用于认证）
+APIFY_API_TOKEN = "apify_api_HFAfjh9nvVIvg8fFweVvn9c0CCcmwe1v2IZb"
+# Arkham Scraper Actor的ID（固定值）
+ARKHAM_ACTOR_ID = "BFRkJAsA9XBVgzoce"
 
-# 创建Apify客户端实例（如果 Token 为空，会在调用时报错）
-client = ApifyClient(APIFY_API_TOKEN) if APIFY_API_TOKEN else None
+# 创建Apify客户端实例
+client = ApifyClient(APIFY_API_TOKEN)
 
 def get_arkham_intelligence(wallet_addresses: list) -> dict:
     """
@@ -100,11 +97,6 @@ def get_arkham_intelligence(wallet_addresses: list) -> dict:
     """
     # 如果地址列表为空，直接返回空字典
     if not wallet_addresses:
-        return {}
-    
-    # 如果客户端未初始化（Token 为空），返回空字典
-    if not client:
-        print("⚠️ Apify API Token 未配置，跳过地址标签获取")
         return {}
 
     print(f"正在通过Apify Arkham Scraper分析 {len(wallet_addresses)} 个地址...")
