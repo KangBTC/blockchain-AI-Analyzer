@@ -49,21 +49,34 @@ from openai import OpenAI
 # ========== AI客户端配置 ==========
 # 注意：与 ai_client.py 使用相同的API Key，但使用不同的模型
 # 总结报告使用Gemini模型，单笔交易分析使用GPT模型
-try:
-    API_KEY = st.secrets["OPENROUTER_API_KEY"]
-except (FileNotFoundError, KeyError):
-    API_KEY = ""
-
 MODEL = "google/gemini-3-pro-preview"  # Gemini模型，适合总结和对话
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=API_KEY,
-    default_headers={
-        "HTTP-Referer": "http://localhost",
-        "X-Title": "AI On-Chain Analyzer"
-    },
-)
+# 延迟初始化客户端，在函数调用时再读取 secrets
+_client = None
+
+def get_client():
+    """获取 OpenAI 客户端实例（延迟初始化）"""
+    global _client
+    if _client:
+        return _client
+    
+    try:
+        api_key = st.secrets["OPENROUTER_API_KEY"]
+    except (FileNotFoundError, KeyError, AttributeError):
+        # 如果无法读取 secrets，尝试使用环境变量或抛出错误
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        if not api_key:
+            raise ValueError("❌ 未找到 OPENROUTER_API_KEY！请在 .streamlit/secrets.toml 中配置。")
+    
+    _client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+        default_headers={
+            "HTTP-Referer": "http://localhost",
+            "X-Title": "AI On-Chain Analyzer"
+        },
+    )
+    return _client
 
 # ========== 总结报告Prompt模板 ==========
 # 这个Prompt用于生成最终的地址行为总结报告
@@ -156,6 +169,8 @@ def generate_conclusion(address: str, analyses: list[str]) -> str:
 
     try:
         # ========== 调用AI生成报告 ==========
+        # 获取客户端（延迟初始化，确保 secrets 已加载）
+        client = get_client()
         response = client.chat.completions.create(
             model=MODEL,  # 使用Gemini模型
             messages=[
@@ -246,6 +261,8 @@ def chat_with_report(address: str, report: str, analyses_summary: str, history: 
 
     try:
         # ========== 调用AI生成回答 ==========
+        # 获取客户端（延迟初始化，确保 secrets 已加载）
+        client = get_client()
         response = client.chat.completions.create(
             model=MODEL,  # 使用Gemini模型
             messages=messages_for_api,  # 包含完整上下文和历史的消息列表

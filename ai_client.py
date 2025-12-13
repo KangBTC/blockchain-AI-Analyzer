@@ -41,26 +41,35 @@ import streamlit as st
 from openai import OpenAI
 
 # ========== AI客户端配置 ==========
-# 从 Streamlit Secrets 读取配置
-try:
-    API_KEY = st.secrets["OPENROUTER_API_KEY"]
-except (FileNotFoundError, KeyError):
-    # 如果没有找到 secrets，可以设置一个空值或者抛出更友好的错误
-    # 但为了兼容性，这里暂时留空，会在 app.py 里通过 try-except 处理
-    API_KEY = ""
-
 MODEL = "google/gemini-2.5-flash"  # 使用的AI模型
 
-# 创建OpenAI客户端（兼容OpenRouter API）
-# 注意：如果 API_KEY 为空，初始化可能会报错，建议在使用前检查
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",  # OpenRouter的API地址
-    api_key=API_KEY,
-    default_headers={
-        "HTTP-Referer": "http://localhost",      # HTTP Referer（可选）
-        "X-Title": "AI On-Chain Analyzer"       # 应用标题（可选）
-    },
-)
+# 延迟初始化客户端，在函数调用时再读取 secrets
+_client = None
+
+def get_client():
+    """获取 OpenAI 客户端实例（延迟初始化）"""
+    global _client
+    if _client:
+        return _client
+    
+    try:
+        api_key = st.secrets["OPENROUTER_API_KEY"]
+    except (FileNotFoundError, KeyError, AttributeError):
+        # 如果无法读取 secrets，尝试使用环境变量或抛出错误
+        import os
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        if not api_key:
+            raise ValueError("❌ 未找到 OPENROUTER_API_KEY！请在 .streamlit/secrets.toml 中配置。")
+    
+    _client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",  # OpenRouter的API地址
+        api_key=api_key,
+        default_headers={
+            "HTTP-Referer": "http://localhost",      # HTTP Referer（可选）
+            "X-Title": "AI On-Chain Analyzer"       # 应用标题（可选）
+        },
+    )
+    return _client
 
 # ========== Prompt模板 ==========
 # 这是发送给AI的提示词模板，定义了分析任务和要求
@@ -130,6 +139,8 @@ def analyze_transaction(transaction_summary: dict) -> dict:
         )
 
         # ========== 调用AI API ==========
+        # 获取客户端（延迟初始化，确保 secrets 已加载）
+        client = get_client()
         # 使用OpenAI兼容的API调用AI模型
         response = client.chat.completions.create(
             model=MODEL,  # 使用的AI模型
