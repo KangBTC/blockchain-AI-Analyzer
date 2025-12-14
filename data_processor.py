@@ -301,9 +301,18 @@ def process_and_clean_details(raw_details_list: list, user_address: str) -> list
         if not detail:
             continue
         
+        # ========== 提取发送方和接收方信息 ==========
+        # fromDetails和toDetails是列表格式，取第一个元素
+        # 使用安全的获取方式：如果有列表且不为空则取第一个，否则为空字典
+        from_list = detail.get("fromDetails")
+        from_detail = from_list[0] if from_list else {}
+        
+        to_list = detail.get("toDetails")
+        to_detail = to_list[0] if to_list else {}
+
         # ========== 1. 基本信息提取 ==========
         # 判断交易是否由用户发起（用于后续的过滤逻辑）
-        tx_initiator = detail.get("fromDetails", [{}])[0].get("address", "").lower()
+        tx_initiator = from_detail.get("address", "").lower()
         is_user_initiated = (tx_initiator == user_address_lower)
         
         # ========== 格式化时间戳 ==========
@@ -313,11 +322,6 @@ def process_and_clean_details(raw_details_list: list, user_address: str) -> list
         if timestamp_ms and timestamp_ms.isdigit():
             timestamp_s = int(timestamp_ms) / 1000
             formatted_time = datetime.fromtimestamp(timestamp_s).strftime('%Y-%m-%d %H:%M:%S')
-        
-        # ========== 提取发送方和接收方信息 ==========
-        # fromDetails和toDetails是列表格式，取第一个元素
-        from_detail = detail.get("fromDetails", [{}])[0] if detail.get("fromDetails") else {}
-        to_detail = detail.get("toDetails", [{}])[0] if detail.get("toDetails") else {}
         
         # ========== 提取Gas价格（Wei单位） ==========
         gas_price_wei = _safe_decimal(detail.get("gasPrice", "0"))
