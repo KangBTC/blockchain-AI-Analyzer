@@ -175,7 +175,8 @@ def extract_tx_info_from_summary(raw_data: list) -> list:
     # 遍历原始数据列表（API可能返回多个数据块）
     for data_chunk in raw_data:
         # 从数据块中提取交易列表
-        transaction_list = data_chunk.get("transactions", [])
+        # 使用 or [] 确保即使 transactions 字段为 None 也能返回空列表
+        transaction_list = data_chunk.get("transactions") or []
         
         # 遍历每笔交易，提取关键信息
         for tx in transaction_list:
